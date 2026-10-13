@@ -1,6 +1,5 @@
 using Microsoft.Toolkit.Uwp.Notifications;
 using System.Diagnostics;
-using Windows.UI.Notifications;
 
 namespace StairGuard;
 
@@ -26,7 +25,7 @@ internal static class ToastNotifier
                 return;
             }
 
-            var content = new ToastContentBuilder()
+            var toast = new ToastContentBuilder()
                 .AddText("StairGuard")
                 .AddText("Человек обнаружен на лестнице")
                 .AddText($"Время: {time:HH:mm:ss}\nУверенность: {confidence:P0}")
@@ -35,7 +34,7 @@ internal static class ToastNotifier
                 .GetToastContent();
 
             ToastNotificationManagerCompat.CreateToastNotifier()
-                .Show(new ToastNotification(content.GetXml()));
+                .Show(toast.CreateToastNotification());
         }
         catch (Exception ex)
         {
