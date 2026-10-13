@@ -61,10 +61,14 @@ internal sealed class Settings
     public string Server { get; set; } = "http://10.1.60.188:8080";
     public string Login { get; set; } = "admin";
     public string Credential { get; set; } = "";
-    public int Fps { get; set; } = 2;
+    // v1.5: independently configured camera/video stream and local AI rate.
+    public string VideoPreset { get; set; } = VideoProfiles.Economy;
+    public double AnalysisFps { get; set; } = 1.0;
+    public bool MotionGateEnabled { get; set; } = true;
+    public int Fps { get; set; } = 5;
     public int ResolutionX { get; set; } = 640;
-    public int ResolutionY { get; set; } = 360;
-    public int JpegQuality { get; set; } = 80;
+    public int ResolutionY { get; set; } = 352;
+    public int JpegQuality { get; set; } = 60;
     public int ConfidencePercent { get; set; } = 42;
     public int CooldownSeconds { get; set; } = 30;
     // All values are normalized fractions of the current camera image.
@@ -76,11 +80,21 @@ internal sealed class Settings
 
     public static Settings Load()
     {
-        try { return JsonSerializer.Deserialize<Settings>(File.ReadAllText(Paths.Settings)) ?? new(); }
+        try
+        {
+            var config = JsonSerializer.Deserialize<Settings>(File.ReadAllText(Paths.Settings)) ?? new();
+            // Existing settings.json from 1.4 has no VideoPreset. Adopt the safe
+            // low-CPU preset while keeping credentials, camera ROI and arrow.
+            VideoProfiles.Apply(config);
+            config.AnalysisFps = AnalysisRates.Normalize(config.AnalysisFps);
+            return config;
+        }
         catch { return new(); }
     }
     public void Save()
     {
+        VideoProfiles.Apply(this);
+        AnalysisFps = AnalysisRates.Normalize(AnalysisFps);
         Directory.CreateDirectory(Paths.Home);
         File.WriteAllText(Paths.Settings, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
@@ -224,4 +238,45 @@ internal static class Mjpeg
         if (image == null) throw new IOException("Не удалось получить JPEG за 12 секунд");
         return image;
     }
+}
+
+ // Video presets are request parameters, not a promise that the server can deliver
+// the requested resolution / rate. Macroscop may cap or rescale the stream.
+internal static class VideoProfiles
+{
+    public const string Economy = "Экономичный";
+    public const string Balanced = "Баланс";
+    public const string Quality = "Качество";
+    public static readonly string[] Names = { Economy, Balanced, Quality };
+
+    public static void Apply(Settings s)
+    {
+        if (!Names.Contains(s.VideoPreset)) s.VideoPreset = Economy;
+        switch (s.VideoPreset)
+        {
+            case Balanced:
+                s.Fps = 10; s.ResolutionX = 640; s.ResolutionY = 352; s.JpegQuality = 75;
+                break;
+            case Quality:
+                s.Fps = 10; s.ResolutionX = 1280; s.ResolutionY = 720; s.JpegQuality = 85;
+                break;
+            default:
+                s.Fps = 5; s.ResolutionX = 640; s.ResolutionY = 352; s.JpegQuality = 60;
+                break;
+        }
+    }
+
+    public static string Describe(string name) => name switch
+    {
+        Balanced => "640×352 · 10 FPS · JPEG 75%",
+        Quality => "1280×720 · 10 FPS · JPEG 85%",
+        _ => "640×352 · 5 FPS · JPEG 60%"
+    };
+}
+
+internal static class AnalysisRates
+{
+    public static readonly double[] Values = { 0.5, 1.0, 2.0 };
+    public static double Normalize(double fps) => Values.MinBy(value => Math.Abs(value - fps));
+    public static string Label(double fps) => fps.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " FPS";
 }
