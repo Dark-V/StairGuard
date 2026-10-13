@@ -72,11 +72,15 @@ internal sealed class Settings
     public int ConfidencePercent { get; set; } = 42;
     public int CooldownSeconds { get; set; } = 30;
     // All values are normalized fractions of the current camera image.
+    // v1.6: free-form polygon (vertices in normalized image coordinates).
+    // Region remains for backward compatibility with rectangles in settings.json.
+    public List<PointF>? RegionPolygon { get; set; }
     public RectangleF? Region { get; set; }
     public PointF? ArrowFrom { get; set; }
     public PointF? ArrowTo { get; set; }
 
-    public bool Ready => !string.IsNullOrWhiteSpace(Credential) && Region.HasValue && ArrowFrom.HasValue && ArrowTo.HasValue;
+    public bool Ready => !string.IsNullOrWhiteSpace(Credential) &&
+        RegionGeometry.Resolve(this) is not null && ArrowFrom.HasValue && ArrowTo.HasValue;
 
     public static Settings Load()
     {

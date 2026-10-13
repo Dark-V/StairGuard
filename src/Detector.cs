@@ -129,8 +129,8 @@ internal sealed class MovementTracker
     {
         long now = Environment.TickCount64;
         tracks.RemoveAll(t => now - t.LastTick > 6500);
-        if (!settings.Region.HasValue || !settings.ArrowFrom.HasValue || !settings.ArrowTo.HasValue) return null;
-        var r = settings.Region.Value;
+        var polygon = RegionGeometry.Resolve(settings);
+        if (polygon is null || !settings.ArrowFrom.HasValue || !settings.ArrowTo.HasValue) return null;
         float ax = (settings.ArrowTo.Value.X - settings.ArrowFrom.Value.X) * width;
         float ay = (settings.ArrowTo.Value.Y - settings.ArrowFrom.Value.Y) * height;
         float length = MathF.Sqrt(ax * ax + ay * ay);
@@ -141,8 +141,7 @@ internal sealed class MovementTracker
         foreach (var person in detections)
         {
             PointF center = person.Center;
-            if (center.X < r.Left * width || center.X > r.Right * width ||
-                center.Y < r.Top * height || center.Y > r.Bottom * height) continue;
+            if (!RegionGeometry.Contains(polygon, center.X / width, center.Y / height)) continue;
             Track? best = null;
             float maxMatch = 70f * width / 640f;
             float distance = maxMatch * maxMatch;

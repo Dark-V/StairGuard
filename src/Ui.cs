@@ -126,7 +126,7 @@ internal sealed class TrayForm : Form
             try
             {
                 using var detector = new Detector(Paths.Model);
-                var motion = new MotionGate();
+                var motion = new MotionGate(config);
                 await foreach (var jpeg in queue.Reader.ReadAllAsync(token))
                 {
                     try
@@ -134,7 +134,7 @@ internal sealed class TrayForm : Form
                         using var ms = new MemoryStream(jpeg, writable: false);
                         using var decoded = Image.FromStream(ms);
                         using var frame = new Bitmap(decoded);
-                        if (config.MotionGateEnabled && !motion.HasMovement(frame, config.Region))
+                        if (config.MotionGateEnabled && !motion.HasMovement(frame))
                             continue;
                         var people = detector.Find(frame, config.ConfidencePercent / 100f);
                         var triggered = tracker.Update(people, config, frame.Width, frame.Height);
@@ -454,7 +454,8 @@ internal sealed class SettingsDialog : Form
             Server = old.Server, Login = old.Login, Credential = old.Credential,
             VideoPreset = old.VideoPreset, AnalysisFps = old.AnalysisFps, MotionGateEnabled = old.MotionGateEnabled,
             ConfidencePercent = old.ConfidencePercent, CooldownSeconds = old.CooldownSeconds,
-            Region = old.Region, ArrowFrom = old.ArrowFrom, ArrowTo = old.ArrowTo
+            Region = old.Region, RegionPolygon = old.RegionPolygon is null ? null : new List<PointF>(old.RegionPolygon),
+            ArrowFrom = old.ArrowFrom, ArrowTo = old.ArrowTo
         };
         Text = "StairGuard — настройки";
         AutoScaleMode = AutoScaleMode.Dpi;
@@ -535,12 +536,12 @@ internal sealed class SettingsDialog : Form
         pickerRow.Controls.Add(select);
         pickerRow.Controls.Add(previewButton);
         Add(pickerRow, null, 4);
-        zone.Text = work.Region.HasValue && work.ArrowFrom.HasValue && work.ArrowTo.HasValue
+        zone.Text = RegionGeometry.Resolve(work) is not null && work.ArrowFrom.HasValue && work.ArrowTo.HasValue
             ? "Область и направление заданы" : "Область и направление ещё не выбраны";
         Add(zone, null, 8);
         Add(new Label
         {
-            Text = "Сначала выдели лестницу прямоугольником, затем проведи стрелку в направлении подъёма к тебе. Видео с камеры не изменяется.",
+            Text = "Обведи лестницу произвольным контуром по точкам, замкни область и укажи стрелкой направление подъёма к тебе.",
             AutoSize = true, MaximumSize = new Size(620, 0), ForeColor = Color.DimGray
         }, null, 8);
         scroller.Controls.Add(table);
@@ -610,10 +611,11 @@ internal sealed class SettingsDialog : Form
         try
         {
             using Bitmap frame = await Mjpeg.Grab(work, CancellationToken.None);
-            using var picker = new RegionPicker(new Bitmap(frame), work.Region, work.ArrowFrom, work.ArrowTo);
+            using var picker = new RegionPicker(new Bitmap(frame), RegionGeometry.Resolve(work), work.ArrowFrom, work.ArrowTo);
             if (picker.ShowDialog(this) == DialogResult.OK)
             {
-                work.Region = picker.Selection;
+                work.RegionPolygon = picker.Selection;
+                work.Region = null;
                 work.ArrowFrom = picker.From;
                 work.ArrowTo = picker.To;
                 zone.Text = "Область и направление заданы";
@@ -653,75 +655,171 @@ internal sealed class RegionPicker : Form
 {
     readonly Bitmap frame;
     readonly SmoothCanvas canvas = new() { Dock = DockStyle.Fill, BackColor = Color.Black };
-    readonly Button regionButton = new() { Text = "1. Выделить лестницу", AutoSize = true, MinimumSize = new Size(165, 36) };
-    readonly Button arrowButton = new() { Text = "2. Указать направление", AutoSize = true, MinimumSize = new Size(180, 36) };
+    readonly Button regionButton = new() { Text = "1. Контур зоны", AutoSize = true, MinimumSize = new Size(155, 36) };
+    readonly Button closeButton = new() { Text = "Замкнуть контур", AutoSize = true, MinimumSize = new Size(165, 36) };
+    readonly Button undoButton = new() { Text = "Убрать точку", AutoSize = true, MinimumSize = new Size(140, 36) };
+    readonly Button resetButton = new() { Text = "Новый контур", AutoSize = true, MinimumSize = new Size(145, 36) };
+    readonly Button arrowButton = new() { Text = "2. Стрелка", AutoSize = true, MinimumSize = new Size(145, 36) };
     readonly Button ok = new() { Text = "Готово", AutoSize = true, MinimumSize = new Size(110, 36) };
+    readonly Label help = new()
+    {
+        Dock = DockStyle.Top, Height = 48, TextAlign = ContentAlignment.MiddleLeft,
+        Padding = new Padding(12, 0, 0, 0)
+    };
+
+    readonly List<PointF> vertices = new();
+    bool closed;
     bool makingRegion = true;
+    int draggedVertex = -1;
+    PointF originalVertex;
     PointF? press;
     PointF? dragging;
-    public RectangleF? Selection { get; private set; }
+    PointF? hover;
+
+    // The completed polygon, in normalized image coordinates.
+    public List<PointF>? Selection => closed && RegionGeometry.IsValid(vertices)
+        ? new List<PointF>(vertices) : null;
     public PointF? From { get; private set; }
     public PointF? To { get; private set; }
 
-    public RegionPicker(Bitmap image, RectangleF? region, PointF? from, PointF? to)
+    public RegionPicker(Bitmap image, IReadOnlyList<PointF>? polygon, PointF? from, PointF? to)
     {
         frame = image;
-        Selection = region; From = from; To = to;
-        Text = "StairGuard — область лестницы и направление подъёма";
+        if (RegionGeometry.IsValid(polygon))
+        {
+            vertices.AddRange(polygon!);
+            closed = true;
+        }
+        From = from;
+        To = to;
+        Text = "StairGuard — произвольная зона лестницы";
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 10);
         ClientSize = new Size(1080, 720);
         MinimumSize = new Size(710, 510);
         StartPosition = FormStartPosition.Manual;
-        var tools = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48, Padding = new Padding(5, 4, 5, 4), WrapContents = false };
-        var help = new Label
+
+        var tools = new FlowLayoutPanel
         {
-            Text = "Зажми левую кнопку мыши и протяни прямоугольник, затем стрелку движения К ТЕБЕ.",
-            Dock = DockStyle.Top, Height = 42,
-            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0)
+            Dock = DockStyle.Top, Height = 92, Padding = new Padding(5, 4, 5, 4),
+            WrapContents = true, AutoScroll = true
         };
-        tools.Controls.AddRange(new Control[] { regionButton, arrowButton, ok });
+        tools.Controls.AddRange(new Control[]
+        {
+            regionButton, closeButton, undoButton, resetButton, arrowButton, ok
+        });
         Controls.Add(canvas);
         Controls.Add(help);
         Controls.Add(tools);
-        regionButton.Click += (_, _) => { makingRegion = true; canvas.Invalidate(); };
-        arrowButton.Click += (_, _) => { makingRegion = false; canvas.Invalidate(); };
+
+        regionButton.Click += (_, _) => { makingRegion = true; UpdateControls(); canvas.Invalidate(); };
+        closeButton.Click += (_, _) => FinishPolygon();
+        undoButton.Click += (_, _) =>
+        {
+            if (vertices.Count == 0) return;
+            vertices.RemoveAt(vertices.Count - 1);
+            closed = false;
+            makingRegion = true;
+            From = To = null;
+            UpdateControls();
+            canvas.Invalidate();
+        };
+        resetButton.Click += (_, _) =>
+        {
+            vertices.Clear();
+            closed = false;
+            makingRegion = true;
+            From = To = null;
+            UpdateControls();
+            canvas.Invalidate();
+        };
+        arrowButton.Click += (_, _) =>
+        {
+            if (!closed)
+            {
+                MessageBox.Show("Сначала замкни контур минимум из трёх точек.");
+                return;
+            }
+            makingRegion = false;
+            UpdateControls();
+            canvas.Invalidate();
+        };
         ok.Click += (_, _) =>
         {
-            if (!Selection.HasValue || !From.HasValue || !To.HasValue ||
-                MathF.Abs(From.Value.X - To.Value.X) + MathF.Abs(From.Value.Y - To.Value.Y) < 0.035f)
-            { MessageBox.Show("Нужны область и достаточно длинная стрелка."); return; }
+            if (!closed || !RegionGeometry.IsValid(vertices))
+            {
+                MessageBox.Show("Замкни корректный контур лестницы минимум из трёх точек.");
+                return;
+            }
+            if (!From.HasValue || !To.HasValue ||
+                MathF.Abs(From.Value.X - To.Value.X) + MathF.Abs(From.Value.Y - To.Value.Y) < .035f)
+            {
+                MessageBox.Show("Проведи стрелку направления подъёма.");
+                return;
+            }
             DialogResult = DialogResult.OK;
             Close();
         };
+
         canvas.Paint += (_, e) => Draw(e.Graphics);
         canvas.MouseDown += (_, e) =>
         {
-            if (e.Button == MouseButtons.Left)
+            if (e.Button != MouseButtons.Left || !TryNormalized(e.Location, out PointF p))
+                return;
+            if (makingRegion)
             {
-                press = Normalized(e.Location);
-                dragging = press;
+                if (closed)
+                {
+                    draggedVertex = FindHandle(e.Location);
+                    if (draggedVertex >= 0)
+                    {
+                        originalVertex = vertices[draggedVertex];
+                        canvas.Capture = true;
+                    }
+                }
+                else
+                {
+                    if (vertices.Count >= 3 && FindHandle(e.Location) == 0)
+                        FinishPolygon();
+                    else if (vertices.Count < 64)
+                    {
+                        vertices.Add(p);
+                        UpdateControls();
+                        canvas.Invalidate();
+                    }
+                }
+            }
+            else if (closed)
+            {
+                press = p;
+                dragging = p;
                 canvas.Capture = true;
             }
         };
         canvas.MouseMove += (_, e) =>
         {
-            if (press.HasValue) { dragging = Normalized(e.Location); canvas.Invalidate(); }
+            hover = TryNormalized(e.Location, out PointF p) ? p : null;
+            if (draggedVertex >= 0 && hover.HasValue)
+                vertices[draggedVertex] = hover.Value;
+            if (press.HasValue && hover.HasValue) dragging = hover.Value;
+            canvas.Invalidate();
         };
         canvas.MouseUp += (_, e) =>
         {
-            if (!press.HasValue) return;
-            var a = press.Value;
-            var b = Normalized(e.Location);
-            if (makingRegion)
+            if (draggedVertex >= 0)
             {
-                float x = Math.Min(a.X, b.X), y = Math.Min(a.Y, b.Y);
-                float w = Math.Abs(a.X - b.X), h = Math.Abs(a.Y - b.Y);
-                if (w > .02f && h > .02f) Selection = new RectangleF(x, y, w, h);
-                makingRegion = false;
+                if (!RegionGeometry.IsValid(vertices)) vertices[draggedVertex] = originalVertex;
+                draggedVertex = -1;
             }
-            else { From = a; To = b; }
-            press = dragging = null;
+            else if (press.HasValue)
+            {
+                if (TryNormalized(e.Location, out var end))
+                {
+                    From = press;
+                    To = end;
+                }
+                press = dragging = null;
+            }
             canvas.Capture = false;
             canvas.Invalidate();
         };
@@ -738,6 +836,33 @@ internal sealed class RegionPicker : Form
             }
         };
         FormClosed += (_, _) => frame.Dispose();
+        UpdateControls();
+    }
+
+    void FinishPolygon()
+    {
+        if (!RegionGeometry.IsValid(vertices))
+        {
+            MessageBox.Show("Контур должен содержать минимум три точки и охватывать ненулевую площадь.");
+            return;
+        }
+        closed = true;
+        makingRegion = false;
+        UpdateControls();
+        canvas.Invalidate();
+    }
+
+    void UpdateControls()
+    {
+        closeButton.Enabled = !closed && vertices.Count >= 3;
+        undoButton.Enabled = vertices.Count > 0;
+        arrowButton.Enabled = closed;
+        help.Text = !closed
+            ? "Щёлкай по краю лестницы, добавляя вершины. Замкни контур первой точкой или кнопкой. " +
+              "Можно обводить изгибы и повороты."
+            : makingRegion
+                ? "Контур замкнут. Перетаскивай вершины для корректировки или нажми «Новый контур»."
+                : "Зажми мышь и проведи стрелку в направлении подъёма К ТЕБЕ. Затем нажми «Готово».";
     }
 
     Rectangle ViewRect()
@@ -748,12 +873,35 @@ internal sealed class RegionPicker : Form
         int h = Math.Max(1, (int)(frame.Height * factor));
         return new Rectangle((canvas.Width - w) / 2, (canvas.Height - h) / 2, w, h);
     }
-    PointF Normalized(Point p)
+
+    bool TryNormalized(Point pixel, out PointF result)
     {
-        Rectangle r = ViewRect();
-        return new PointF(Math.Clamp((p.X - r.X) / (float)r.Width, 0, 1),
-                          Math.Clamp((p.Y - r.Y) / (float)r.Height, 0, 1));
+        Rectangle rect = ViewRect();
+        if (!rect.Contains(pixel))
+        {
+            result = default;
+            return false;
+        }
+        result = new PointF(Math.Clamp((pixel.X - rect.X) / (float)rect.Width, 0, 1),
+                            Math.Clamp((pixel.Y - rect.Y) / (float)rect.Height, 0, 1));
+        return true;
     }
+
+    int FindHandle(Point mouse)
+    {
+        var rect = ViewRect();
+        float maxDistance = 16f * 16f;
+        int index = -1;
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            float dx = rect.X + vertices[i].X * rect.Width - mouse.X;
+            float dy = rect.Y + vertices[i].Y * rect.Height - mouse.Y;
+            float distance = dx * dx + dy * dy;
+            if (distance <= maxDistance) { maxDistance = distance; index = i; }
+        }
+        return index;
+    }
+
     void Draw(Graphics g)
     {
         g.Clear(Color.Black);
@@ -761,32 +909,46 @@ internal sealed class RegionPicker : Form
         g.InterpolationMode = InterpolationMode.HighQualityBilinear;
         var area = ViewRect();
         g.DrawImage(frame, area);
+
         PointF Pixel(PointF p) => new(area.Left + p.X * area.Width, area.Top + p.Y * area.Height);
-        void DrawRegion(RectangleF r)
+        if (vertices.Count > 0)
         {
-            using var brush = new SolidBrush(Color.FromArgb(42, Color.LimeGreen));
-            g.FillRectangle(brush, area.Left + r.X * area.Width, area.Top + r.Y * area.Height,
-                r.Width * area.Width, r.Height * area.Height);
-            using var pen = new Pen(Color.Lime, 3);
-            g.DrawRectangle(pen, area.Left + r.X * area.Width, area.Top + r.Y * area.Height,
-                r.Width * area.Width, r.Height * area.Height);
+            PointF[] points = vertices.Select(Pixel).ToArray();
+            if (closed && vertices.Count >= 3)
+            {
+                using var fill = new SolidBrush(Color.FromArgb(55, Color.LimeGreen));
+                g.FillPolygon(fill, points);
+                using var outline = new Pen(Color.Lime, 3);
+                g.DrawPolygon(outline, points);
+            }
+            else if (points.Length >= 2)
+            {
+                using var outline = new Pen(Color.Lime, 3);
+                g.DrawLines(outline, points);
+            }
+
+            if (!closed && makingRegion && hover.HasValue)
+            {
+                using var guide = new Pen(Color.FromArgb(170, Color.Lime), 2) { DashStyle = DashStyle.Dash };
+                g.DrawLine(guide, points[^1], Pixel(hover.Value));
+            }
+
+            for (int i = 0; i < points.Length; i++)
+            {
+                float size = i == 0 ? 13 : 11;
+                using var fill = new SolidBrush(i == 0 ? Color.Gold : Color.White);
+                g.FillEllipse(fill, points[i].X - size / 2, points[i].Y - size / 2, size, size);
+                g.DrawEllipse(Pens.DarkGreen, points[i].X - size / 2, points[i].Y - size / 2, size, size);
+            }
         }
+
         void DrawArrow(PointF from, PointF to)
         {
             using var pen = new Pen(Color.OrangeRed, 4);
             pen.CustomEndCap = new AdjustableArrowCap(5, 6);
             g.DrawLine(pen, Pixel(from), Pixel(to));
         }
-        if (Selection.HasValue) DrawRegion(Selection.Value);
         if (From.HasValue && To.HasValue) DrawArrow(From.Value, To.Value);
-        if (press.HasValue && dragging.HasValue)
-        {
-            if (makingRegion)
-            {
-                var a = press.Value; var b = dragging.Value;
-                DrawRegion(new RectangleF(Math.Min(a.X, b.X), Math.Min(a.Y, b.Y), Math.Abs(a.X - b.X), Math.Abs(a.Y - b.Y)));
-            }
-            else DrawArrow(press.Value, dragging.Value);
-        }
+        if (press.HasValue && dragging.HasValue) DrawArrow(press.Value, dragging.Value);
     }
 }
