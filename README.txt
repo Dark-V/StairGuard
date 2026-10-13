@@ -89,3 +89,34 @@ Update procedure:
 
 Build verification: the source and package were checked statically in the authoring
 runtime. A Windows build and actual Macroscop/Windows UI test are still required.
+
+
+v1.5 — independent video & analysis + presets
+===============================================
+Camera: exclusively 8e6d2d1e-4205-4759-b79e-f9e8c04549cc.
+In Settings, the "Режим видеопотока" selector replaces manual width,
+height, FPS and JPEG quality entries:
+- Экономичный: 640x352 @ 5 FPS, JPEG quality 60 (requested)
+- Баланс:      640x352 @10 FPS, JPEG quality 75 (requested)
+- Качество:    1280x720@10 FPS, JPEG quality 85 (requested)
+
+Separate "Частота анализа YOLO": 0.5 / 1 / 2 FPS. Defaults to 1.
+Optionally enable the lightweight motion prefilter (on by default).
+The inference queue stores only one latest frame; no processing backlog.
+When video preview is hidden, incoming JPEGs aren't decoded for display;
+analysis decompresses only sampled frames, and YOLO runs only on motion.
+Motion gating works only within the selected ROI and uses a lightweight
+96x64 grayscale comparison with compensation for uniform brightness shifts.
+
+The ONNX model has a fixed 640x640 input. Increasing/decreasing video stream
+resolution does not change the model tensor size. Rate limiting and movement
+filtering, not a fictitious low-resolution YOLO setting, save CPU.
+
+IMPORTANT: These are requested stream parameters: Macroscop may cap FPS,
+resize output, or ignore JPEG quality. Measure actual throughput locally.
+When upgrading v1.4 settings, video preset defaults to "Экономичный";
+password, selected ROI, direction and thresholds are retained.
+Trigger snapshots: %LOCALAPPDATA%\StairGuard\Triggers (last five).
+No second camera stream is started for preview.
+
+Windows compile validation is configured via .github/workflows/build.yml.

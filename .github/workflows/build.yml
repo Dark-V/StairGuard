@@ -1,0 +1,24 @@
+name: Windows build
+
+on:
+  push:
+    branches: [main, 'feature/**']
+  pull_request:
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Restore packages
+        run: dotnet restore src/StairGuard.csproj -r win-x64 --configfile NuGet.Config -p:SelfContained=true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+      - name: Publish Windows executable
+        run: dotnet publish src/StairGuard.csproj --no-restore -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false -p:PublishAot=false -p:DebugType=None -p:DebugSymbols=false -o publish
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StairGuard-win-x64
+          path: publish/
+          retention-days: 7

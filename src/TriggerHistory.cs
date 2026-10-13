@@ -12,7 +12,7 @@ internal static class TriggerHistory
             var dir = Path.Combine(Paths.Home, "Triggers");
             Directory.CreateDirectory(dir);
 
-            var stamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
+            var stamp = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss-fff");
             var image = Path.Combine(dir, stamp + ".jpg");
 
             if (frame != null && crop.HasValue)

@@ -2,6 +2,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Threading.Channels;
 using System.Diagnostics;
+using System.Drawing.Imaging;
 using System.Windows.Forms;
 
 namespace StairGuard;
@@ -10,13 +11,12 @@ internal sealed class TrayForm : Form
 {
     readonly NotifyIcon tray;
     readonly ToolStripMenuItem pauseItem;
-    readonly MovementTracker tracker = new();
     Settings settings = Settings.Load();
     CancellationTokenSource? feedToken;
     Task? feedTask;
     bool paused;
     bool shuttingDown;
-    Bitmap? latest;
+    byte[]? latestJpeg;
     readonly object imageGate = new();
     long latestVersion;
     PreviewForm? preview;
@@ -110,10 +110,11 @@ internal sealed class TrayForm : Form
         finally { restartLock.Release(); }
     }
 
-    // Decouple video reception from inference. A slow CPU must not freeze live preview
-    // or force the MJPEG connection to back up indefinitely.
+    // One camera connection feeds the live preview and a rate-limited inference
+    // queue. Incoming JPEGs are not decoded until displayed or analysed.
     async Task ReadLoop(Settings config, CancellationToken token)
     {
+        var tracker = new MovementTracker();
         var queue = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1)
         {
             SingleReader = true,
@@ -125,13 +126,16 @@ internal sealed class TrayForm : Form
             try
             {
                 using var detector = new Detector(Paths.Model);
+                var motion = new MotionGate();
                 await foreach (var jpeg in queue.Reader.ReadAllAsync(token))
                 {
                     try
                     {
-                        using var ms = new MemoryStream(jpeg);
+                        using var ms = new MemoryStream(jpeg, writable: false);
                         using var decoded = Image.FromStream(ms);
                         using var frame = new Bitmap(decoded);
+                        if (config.MotionGateEnabled && !motion.HasMovement(frame, config.Region))
+                            continue;
                         var people = detector.Find(frame, config.ConfidencePercent / 100f);
                         var triggered = tracker.Update(people, config, frame.Width, frame.Height);
                         if (triggered != null) Alert(frame, triggered);
@@ -152,30 +156,31 @@ internal sealed class TrayForm : Form
         try
         {
             SetStatus("StairGuard — наблюдение за лестницей");
+            long lastQueuedAt = 0;
+            long intervalTicks = (long)(Stopwatch.Frequency / AnalysisRates.Normalize(config.AnalysisFps));
             while (!token.IsCancellationRequested)
             {
                 try
                 {
                     await Mjpeg.Consume(config, jpeg =>
                     {
-                        // Only a single MJPEG request for both the preview and analysis.
-                        using var ms = new MemoryStream(jpeg);
-                        using var decoded = Image.FromStream(ms);
-                        var frame = new Bitmap(decoded);
                         lock (imageGate)
                         {
-                            latest?.Dispose();
-                            latest = frame;
+                            latestJpeg = jpeg;
                             ++latestVersion;
                         }
-                        queue.Writer.TryWrite(jpeg);
+                        long now = Stopwatch.GetTimestamp();
+                        if (lastQueuedAt == 0 || now - lastQueuedAt >= intervalTicks)
+                        {
+                            lastQueuedAt = now;
+                            queue.Writer.TryWrite(jpeg); // latest only; never block video
+                        }
                         return Task.CompletedTask;
                     }, token);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { break; }
                 catch (Exception e)
                 {
-                    // Avoid credentials leaking from exception messages/URLs.
                     Log.Write($"Поток: {e.GetType().Name}: {SafeError(e.Message)}");
                     SetStatus("StairGuard — переподключение к камере");
                     await Task.Delay(TimeSpan.FromSeconds(5), token);
@@ -222,7 +227,9 @@ internal sealed class TrayForm : Form
                     alert.FormClosed += (_, _) => Volatile.Write(ref popupBusy, 0);
                     alert.Show();
                     Log.Write($"Подъём по лестнице, уверенность {person.Confidence:P0}");
-                    TriggerHistory.Add(person.Confidence, frame, new Rectangle(x, y, r - x, d - y));
+                    // frame belongs to the inference loop and may already be disposed;
+                    // copy is retained by the alert form and is valid here.
+                    TriggerHistory.Add(person.Confidence, copy, new Rectangle(0, 0, copy.Width, copy.Height));
                 }
                 catch { copy.Dispose(); Volatile.Write(ref popupBusy, 0); }
             }));
@@ -232,11 +239,17 @@ internal sealed class TrayForm : Form
 
     (Bitmap? image, long version) GetPreviewFrame(long seenVersion)
     {
+        byte[]? jpeg;
+        long version;
         lock (imageGate)
         {
-            if (latest == null || latestVersion == seenVersion) return (null, seenVersion);
-            return (new Bitmap(latest), latestVersion);
+            if (latestJpeg == null || latestVersion == seenVersion) return (null, seenVersion);
+            jpeg = latestJpeg;
+            version = latestVersion;
         }
+        using var ms = new MemoryStream(jpeg, writable: false);
+        using var image = Image.FromStream(ms);
+        return (new Bitmap(image), version);
     }
 
     void ShowPreview()
@@ -295,7 +308,7 @@ internal sealed class TrayForm : Form
         preview?.Close();
         tray.Visible = false;
         tray.Dispose();
-        lock (imageGate) { latest?.Dispose(); latest = null; }
+        lock (imageGate) { latestJpeg = null; }
         base.OnFormClosed(e);
     }
 }
@@ -419,10 +432,10 @@ internal sealed class SettingsDialog : Form
     readonly TextBox server = new() { Dock = DockStyle.Fill };
     readonly TextBox login = new() { Dock = DockStyle.Fill };
     readonly TextBox password = new() { Dock = DockStyle.Fill, UseSystemPasswordChar = true, PlaceholderText = "Не менять сохранённый пароль" };
-    readonly NumericUpDown fps = new() { Minimum = 1, Maximum = 10, Width = 95 };
-    readonly NumericUpDown resX = new() { Minimum = 160, Maximum = 1920, Width = 95 };
-    readonly NumericUpDown resY = new() { Minimum = 90, Maximum = 1080, Width = 95 };
-    readonly NumericUpDown quality = new() { Minimum = 20, Maximum = 100, Width = 95 };
+    readonly ComboBox videoPreset = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 185 };
+    readonly Label videoDetails = new() { AutoSize = true, ForeColor = Color.DimGray };
+    readonly ComboBox analysisRate = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 185 };
+    readonly CheckBox motionGate = new() { Text = "Запускать YOLO только при движении на лестнице", AutoSize = true, Checked = true };
     readonly NumericUpDown conf = new() { Minimum = 20, Maximum = 90, Width = 95 };
     readonly NumericUpDown cooldown = new() { Minimum = 5, Maximum = 300, Width = 95 };
     readonly CheckBox autostart = new() { Text = "Запускать автоматически при входе в Windows", AutoSize = true };
@@ -439,7 +452,8 @@ internal sealed class SettingsDialog : Form
         work = new Settings
         {
             Server = old.Server, Login = old.Login, Credential = old.Credential,
-            Fps = old.Fps, ResolutionX = old.ResolutionX, ResolutionY = old.ResolutionY, JpegQuality = old.JpegQuality, ConfidencePercent = old.ConfidencePercent, CooldownSeconds = old.CooldownSeconds,
+            VideoPreset = old.VideoPreset, AnalysisFps = old.AnalysisFps, MotionGateEnabled = old.MotionGateEnabled,
+            ConfidencePercent = old.ConfidencePercent, CooldownSeconds = old.CooldownSeconds,
             Region = old.Region, ArrowFrom = old.ArrowFrom, ArrowTo = old.ArrowTo
         };
         Text = "StairGuard — настройки";
@@ -497,19 +511,22 @@ internal sealed class SettingsDialog : Form
         Add(new Label { Text = "Камера: " + Paths.Channel, AutoSize = true, Font = new Font(Font, FontStyle.Bold), ForeColor = Color.FromArgb(36, 72, 115) }, null, 16);
         server.Text = work.Server;
         login.Text = work.Login;
-        fps.Value = Math.Clamp(work.Fps, (int)fps.Minimum, (int)fps.Maximum);
-        resX.Value = Math.Clamp(work.ResolutionX, (int)resX.Minimum, (int)resX.Maximum);
-        resY.Value = Math.Clamp(work.ResolutionY, (int)resY.Minimum, (int)resY.Maximum);
-        quality.Value = Math.Clamp(work.JpegQuality, (int)quality.Minimum, (int)quality.Maximum);
+        videoPreset.Items.AddRange(VideoProfiles.Names);
+        videoPreset.SelectedItem = VideoProfiles.Names.Contains(work.VideoPreset) ? work.VideoPreset : VideoProfiles.Economy;
+        videoDetails.Text = VideoProfiles.Describe(work.VideoPreset);
+        videoPreset.SelectedIndexChanged += (_, _) => videoDetails.Text = VideoProfiles.Describe(videoPreset.SelectedItem?.ToString() ?? VideoProfiles.Economy);
+        foreach (double rate in AnalysisRates.Values) analysisRate.Items.Add(AnalysisRates.Label(rate));
+        analysisRate.SelectedIndex = Array.IndexOf(AnalysisRates.Values, AnalysisRates.Normalize(work.AnalysisFps));
+        motionGate.Checked = work.MotionGateEnabled;
         conf.Value = Math.Clamp(work.ConfidencePercent, (int)conf.Minimum, (int)conf.Maximum);
         cooldown.Value = Math.Clamp(work.CooldownSeconds, (int)cooldown.Minimum, (int)cooldown.Maximum);
         Add(server, "Сервер Macroscop");
         Add(login, "Логин");
         Add(password, "Пароль / MD5");
-        Add(fps, "Кадры в секунду, FPS");
-        Add(resX, "Ширина видео");
-        Add(resY, "Высота видео");
-        Add(quality, "Качество JPEG, %");
+        Add(videoPreset, "Режим видеопотока");
+        Add(videoDetails, "Видео Macroscop");
+        Add(analysisRate, "Частота анализа YOLO");
+        Add(motionGate, null, 8);
         Add(conf, "Уверенность, %");
         Add(cooldown, "Повтор тревоги, сек.");
         autostart.Checked = Settings.Autostart();
@@ -554,10 +571,10 @@ internal sealed class SettingsDialog : Form
     {
         work.Server = server.Text.Trim();
         work.Login = login.Text.Trim();
-        work.Fps = (int)fps.Value;
-        work.ResolutionX = (int)resX.Value;
-        work.ResolutionY = (int)resY.Value;
-        work.JpegQuality = (int)quality.Value;
+        work.VideoPreset = videoPreset.SelectedItem?.ToString() ?? VideoProfiles.Economy;
+        VideoProfiles.Apply(work);
+        work.AnalysisFps = AnalysisRates.Values[Math.Max(0, analysisRate.SelectedIndex)];
+        work.MotionGateEnabled = motionGate.Checked;
         work.ConfidencePercent = (int)conf.Value;
         work.CooldownSeconds = (int)cooldown.Value;
         if (string.IsNullOrWhiteSpace(work.Server) || string.IsNullOrWhiteSpace(work.Login))
