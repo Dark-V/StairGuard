@@ -23,7 +23,7 @@ internal sealed class Detector : IDisposable
     {
         if (!File.Exists(model)) throw new FileNotFoundException("Отсутствует yolov8n.onnx. Запусти Build-and-Install.ps1", model);
         var options = new SessionOptions();
-        options.IntraOpNumThreads = 2;
+        options.IntraOpNumThreads = 1;
         options.InterOpNumThreads = 1;
         options.GraphOptimizationLevel = GraphOptimizationLevel.ORT_ENABLE_ALL;
         session = new InferenceSession(model, options);
@@ -128,7 +128,7 @@ internal sealed class MovementTracker
     public Person? Update(IReadOnlyList<Person> detections, Settings settings, int width, int height)
     {
         long now = Environment.TickCount64;
-        tracks.RemoveAll(t => now - t.LastTick > 4000);
+        tracks.RemoveAll(t => now - t.LastTick > 6500);
         if (!settings.Region.HasValue || !settings.ArrowFrom.HasValue || !settings.ArrowTo.HasValue) return null;
         var r = settings.Region.Value;
         float ax = (settings.ArrowTo.Value.X - settings.ArrowFrom.Value.X) * width;
@@ -144,7 +144,8 @@ internal sealed class MovementTracker
             if (center.X < r.Left * width || center.X > r.Right * width ||
                 center.Y < r.Top * height || center.Y > r.Bottom * height) continue;
             Track? best = null;
-            float distance = 70 * 70;
+            float maxMatch = 70f * width / 640f;
+            float distance = maxMatch * maxMatch;
             foreach (Track tr in tracks)
             {
                 if (used.Contains(tr)) continue;
@@ -167,13 +168,13 @@ internal sealed class MovementTracker
             float dx0 = center.X - best.Origin.X, dy0 = center.Y - best.Origin.Y;
             float forward = dx0 * ax + dy0 * ay;
             float lateral = MathF.Abs(-dx0 * ay + dy0 * ax);
-            if (forward < -12)
+            if (forward < -12f * width / 640f)
             {
                 best.Origin = center; best.Hits = 1; best.Triggered = false;
                 continue;
             }
             // Person followed for 3+ samples, moved >=25 pixels in arrow direction.
-            if (!best.Triggered && best.Hits >= 3 && forward >= 25 && lateral < forward * 1.25f &&
+            if (!best.Triggered && best.Hits >= 3 && forward >= 25f * width / 640f && lateral < forward * 1.25f &&
                 (lastAlert == 0 || now - lastAlert >= settings.CooldownSeconds * 1000L))
             {
                 lastAlert = now;
