@@ -34,9 +34,37 @@ internal static class RegionGeometry
             if (!float.IsFinite(a.X) || !float.IsFinite(a.Y) ||
                 a.X < 0 || a.X > 1 || a.Y < 0 || a.Y > 1)
                 return false;
+            if (Math.Abs(a.X - b.X) + Math.Abs(a.Y - b.Y) < .00001f)
+                return false; // duplicate consecutive vertices
             twiceArea += (double)a.X * b.Y - (double)b.X * a.Y;
         }
-        return Math.Abs(twiceArea) >= 0.0002;
+        if (Math.Abs(twiceArea) < 0.0002) return false;
+        for (int i = 0; i < points.Count; ++i)
+        for (int j = i + 2; j < points.Count; ++j)
+        {
+            if (i == 0 && j == points.Count - 1) continue; // touching adjacent edges
+            if (Intersects(points[i], points[(i + 1) % points.Count],
+                points[j], points[(j + 1) % points.Count]))
+                return false;
+        }
+        return true;
+    }
+
+    // Reject crossing edges; concave contours are still allowed.
+    static bool Intersects(PointF a, PointF b, PointF c, PointF d)
+    {
+        static float Side(PointF a, PointF b, PointF p) =>
+            (b.X - a.X) * (p.Y - a.Y) - (b.Y - a.Y) * (p.X - a.X);
+        static bool Between(PointF a, PointF b, PointF p) =>
+            p.X >= Math.Min(a.X, b.X) - .000001f && p.X <= Math.Max(a.X, b.X) + .000001f &&
+            p.Y >= Math.Min(a.Y, b.Y) - .000001f && p.Y <= Math.Max(a.Y, b.Y) + .000001f;
+        float ac = Side(a, b, c), ad = Side(a, b, d);
+        float ca = Side(c, d, a), cb = Side(c, d, b);
+        if (Math.Abs(ac) < .000001f && Between(a, b, c)) return true;
+        if (Math.Abs(ad) < .000001f && Between(a, b, d)) return true;
+        if (Math.Abs(ca) < .000001f && Between(c, d, a)) return true;
+        if (Math.Abs(cb) < .000001f && Between(c, d, b)) return true;
+        return ((ac > 0) != (ad > 0)) && ((ca > 0) != (cb > 0));
     }
 
     public static RectangleF Bounds(IReadOnlyList<PointF> polygon)
