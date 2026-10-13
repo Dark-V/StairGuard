@@ -35,7 +35,7 @@ jobs:
 
       - name: Package source code
         shell: pwsh
-        run: Compress-Archive -Path ./* -DestinationPath StairGuard-source.zip -Exclude .git
+        run: git archive --format=zip --output=StairGuard-source.zip HEAD
 
       - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
