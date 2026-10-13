@@ -29,20 +29,28 @@ jobs:
       - name: Publish Windows executable
         run: dotnet publish src/StairGuard.csproj --no-restore -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:PublishTrimmed=false -p:PublishAot=false -p:DebugType=None -p:DebugSymbols=false -o publish
 
-      - name: Package release archive
+      - name: Package compiled release
         shell: pwsh
-        run: Compress-Archive -Path publish/* -DestinationPath StairGuard-win-x64.zip
+        run: Compress-Archive -Path publish/* -DestinationPath StairGuard-win-x64-self-contained.zip
 
-      - name: Upload CI artifact
+      - name: Package source code
+        shell: pwsh
+        run: Compress-Archive -Path ./* -DestinationPath StairGuard-source.zip -Exclude .git
+
+      - name: Upload CI artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: StairGuard-win-x64
-          path: StairGuard-win-x64.zip
+          name: StairGuard-builds
+          path: |
+            StairGuard-win-x64-self-contained.zip
+            StairGuard-source.zip
           retention-days: 30
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: StairGuard-win-x64.zip
+          files: |
+            StairGuard-win-x64-self-contained.zip
+            StairGuard-source.zip
           generate_release_notes: true
