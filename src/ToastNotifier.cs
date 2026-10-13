@@ -9,6 +9,7 @@ internal static class ToastNotifier
     {
         string dir = Path.Combine(Paths.Home, "Triggers");
         Directory.CreateDirectory(dir);
+
         string file = Path.Combine(dir, $"{time:yyyy-MM-dd_HH-mm-ss}.jpg");
         File.WriteAllBytes(file, jpeg);
         return file;
@@ -18,17 +19,23 @@ internal static class ToastNotifier
     {
         try
         {
+            if (!File.Exists(imagePath))
+            {
+                Log.Write($"Toast image missing: {imagePath}");
+                return;
+            }
+
             new ToastContentBuilder()
                 .AddText("StairGuard")
-                .AddText("Обнаружен человек на лестнице")
+                .AddText("Человек обнаружен на лестнице")
                 .AddText($"Время: {time:HH:mm:ss}\nУверенность: {confidence:P0}")
-                .AddInlineImage(new Uri(imagePath))
-                .AddArgument("trigger", imagePath)
+                .AddHeroImage(new Uri(imagePath))
+                .AddArgument("triggerImage", imagePath)
                 .Show();
         }
         catch (Exception ex)
         {
-            Log.Write($"Toast notification failed: {ex.Message}");
+            Log.Write($"Toast notification failed: {ex}");
         }
     }
 
@@ -36,17 +43,19 @@ internal static class ToastNotifier
     {
         try
         {
+            string target = imagePath != null && File.Exists(imagePath)
+                ? imagePath
+                : Path.Combine(Paths.Home, "Triggers");
+
             Process.Start(new ProcessStartInfo
             {
-                FileName = imagePath != null && File.Exists(imagePath)
-                    ? imagePath
-                    : Path.Combine(Paths.Home, "Triggers"),
+                FileName = target,
                 UseShellExecute = true
             });
         }
         catch (Exception ex)
         {
-            Log.Write($"Open trigger failed: {ex.Message}");
+            Log.Write($"Open trigger failed: {ex}");
         }
     }
 }
