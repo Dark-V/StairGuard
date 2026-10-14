@@ -156,23 +156,32 @@ internal sealed class MovementTracker
                 continue;
             }
             Track? best = null;
-            float maxMatch = 70f * width / 640f;
+            // Scale the association radius with frame width, as other tracker
+            // distance thresholds do. The old fixed 70px radius rejected an
+            // 83px change visible in real camera debug logs.
+            float maxMatch = Math.Clamp(settings.TrackerMatchPixels, 70, 250) * width / 640f;
             float distance = maxMatch * maxMatch;
+            float nearestDistanceSquared = float.PositiveInfinity;
             foreach (Track tr in tracks)
             {
                 if (used.Contains(tr)) continue;
                 float dx = tr.Last.X - center.X, dy = tr.Last.Y - center.Y;
                 float d = dx * dx + dy * dy;
+                nearestDistanceSquared = Math.Min(nearestDistanceSquared, d);
                 if (d < distance) { distance = d; best = tr; }
             }
             if (best == null)
             {
+                trace?.Invoke(float.IsPositiveInfinity(nearestDistanceSquared)
+                    ? $"new_track reason=no_previous_track center=({center.X:F0},{center.Y:F0}) radius={maxMatch:F0}px"
+                    : $"new_track reason=match_too_far nearest={MathF.Sqrt(nearestDistanceSquared):F1}px " +
+                      $"radius={maxMatch:F0}px center=({center.X:F0},{center.Y:F0})");
                 best = new Track { Origin = center, Last = center, Hits = 1, LastTick = now };
                 tracks.Add(best);
-                trace?.Invoke($"new_track center=({center.X:F0},{center.Y:F0})");
             }
             else
             {
+                trace?.Invoke($"matched_track displacement={MathF.Sqrt(distance):F1}px radius={maxMatch:F0}px");
                 best.Last = center;
                 best.Hits++;
                 best.LastTick = now;
