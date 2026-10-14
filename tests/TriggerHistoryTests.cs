@@ -48,7 +48,22 @@ internal static class Program
             Check(rows.Length == 6, $"Expected six visits, found {rows.Length}");
             Check(rows.Count(line => line.Contains("ТЕСТ")) == 2, "Manual events must be labelled as tests");
             Check(rows.Count(line => line.Contains("ПОСЕЩЕНИЕ")) == 4, "Real events missing from journal");
-            Console.WriteLine("Trigger history image and journal tests: PASS");
+
+            var entries = TriggerHistory.ReadRecent(10);
+            Check(entries.Count == 6, $"Expected six parsed entries, found {entries.Count}");
+            Check(entries[0].IsTest, "Newest entry must be test");
+            Check(entries[0].Confidence > 0.99f, "Confidence parser failed");
+            Check(entries[0].ImagePath == null, "No-image entry must parse without a path");
+            Check(entries.Any(entry => !entry.IsTest && entry.ImagePath != null && File.Exists(entry.ImagePath)),
+                "Visit image path parser failed");
+
+            File.WriteAllText(Paths.TriggersJournal, "Срабатываний ещё не было.");
+            TriggerHistory.Add(0.75f, source, isTest: false);
+            Check(!File.ReadAllText(Paths.TriggersJournal).Contains("Срабатываний ещё не было."),
+                "Legacy placeholder was not removed");
+            Check(TriggerHistory.ReadRecent(5).Count == 1, "Migrated visit log must contain one parseable entry");
+
+            Console.WriteLine("Trigger history image, migration and journal parser tests: PASS");
             return 0;
         }
         catch (Exception ex)

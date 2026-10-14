@@ -20,7 +20,6 @@ internal sealed class TrayForm : Form
     readonly object imageGate = new();
     long latestVersion;
     PreviewForm? preview;
-    int popupBusy;
     readonly SemaphoreSlim restartLock = new(1, 1);
 
     public TrayForm()
@@ -37,10 +36,9 @@ internal sealed class TrayForm : Form
         menu.Items.Add("Смотреть видео с камеры", null, (_, _) => ShowPreview());
         pauseItem = new ToolStripMenuItem("Приостановить", null, (_, _) => TogglePause());
         menu.Items.Add(pauseItem);
+        menu.Items.Add("Журнал посещений", null, (_, _) => OpenTriggerHistory());
         menu.Items.Add("Технический журнал", null, (_, _) => OpenJournal());
-        menu.Items.Add("Журнал посещений (триггеров)", null, (_, _) => OpenTriggers());
-        menu.Items.Add("Последние 5 срабатываний", null, (_, _) => OpenRecentTriggers());
-        menu.Items.Add("Тестовый триггер", null, (_, _) => TriggerTest());
+        menu.Items.Add("Тестовый триггер Windows", null, (_, _) => TriggerTest());
         menu.Items.Add("Выход", null, (_, _) => { shuttingDown = true; Close(); });
         tray = new NotifyIcon
         {
@@ -222,65 +220,25 @@ internal sealed class TrayForm : Form
         RecordTrigger(frame, person.Confidence, new Rectangle(x, y, r - x, d - y), false);
     }
 
-    // A real and a manual event use exactly the same logging, image and
-    // notification path. The history is recorded even if a popup is open.
+    // A real and a manual event use the same persistence and native Windows
+    // notification path. No custom alarm window is shown here.
     void RecordTrigger(Bitmap frame, float confidence, Rectangle? crop, bool isTest)
     {
         DateTime time = DateTime.Now;
         string? imagePath = TriggerHistory.Add(confidence, frame, crop, isTest);
         if (imagePath == null)
         {
-            Log.Write("Триггер записан без снимка: уведомление с фото пропущено.");
+            Log.Write("Триггер записан без снимка: Windows-уведомление с фото пропущено.");
+            if (isTest)
+                MessageBox.Show("Тест записан, но снимок сохранить не удалось. См. технический журнал.",
+                    "StairGuard", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
 
-        ToastNotifier.ShowTrigger(imagePath, confidence, time, isTest);
-
-        if (Interlocked.CompareExchange(ref popupBusy, 1, 0) != 0) return;
-        Bitmap? copy = null;
-        try
-        {
-            using (var file = File.OpenRead(imagePath))
-            using (var decoded = Image.FromStream(file))
-                copy = new Bitmap(decoded);
-
-            if (shuttingDown || !IsHandleCreated || IsDisposed)
-            {
-                copy.Dispose();
-                Volatile.Write(ref popupBusy, 0);
-                return;
-            }
-
-            var owned = copy;
-            copy = null;
-            BeginInvoke(new Action(() =>
-            {
-                if (shuttingDown || IsDisposed)
-                {
-                    owned.Dispose();
-                    Volatile.Write(ref popupBusy, 0);
-                    return;
-                }
-                try
-                {
-                    var alert = new AlertForm(owned, manual: isTest, autoClose: true);
-                    alert.FormClosed += (_, _) => Volatile.Write(ref popupBusy, 0);
-                    alert.Show();
-                }
-                catch (Exception ex)
-                {
-                    Log.Write($"Окно тревоги: {ex}");
-                    owned.Dispose();
-                    Volatile.Write(ref popupBusy, 0);
-                }
-            }));
-        }
-        catch (Exception ex)
-        {
-            copy?.Dispose();
-            Volatile.Write(ref popupBusy, 0);
-            Log.Write($"Окно тревоги: {ex}");
-        }
+        bool shown = ToastNotifier.ShowTrigger(imagePath, confidence, time, isTest);
+        if (isTest && !shown)
+            MessageBox.Show("Windows-уведомление не удалось показать. Подробности записаны в технический журнал.",
+                "StairGuard", MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 
     void TriggerTest()
@@ -368,31 +326,20 @@ internal sealed class TrayForm : Form
         }
     }
 
-    void OpenTriggers()
+    void OpenTriggerHistory()
     {
         try
         {
-            Directory.CreateDirectory(Paths.Home);
-            if (!File.Exists(Paths.TriggersJournal))
-                File.WriteAllText(Paths.TriggersJournal, "");
-            var info = new ProcessStartInfo("notepad.exe") { UseShellExecute = true };
-            info.ArgumentList.Add(Paths.TriggersJournal);
-            Process.Start(info);
+            var history = new TriggerHistoryForm();
+            history.Show();
+            history.Activate();
         }
-        catch (Exception ex) { Log.Write(ex); }
-    }
-
-    void OpenRecentTriggers()
-    {
-        try
+        catch (Exception ex)
         {
-            var recent = File.Exists(Paths.TriggersJournal)
-                ? File.ReadLines(Paths.TriggersJournal).Where(line => !string.IsNullOrWhiteSpace(line)).TakeLast(5).ToArray()
-                : Array.Empty<string>();
-            MessageBox.Show(recent.Length == 0 ? "Срабатываний ещё не было." : string.Join(Environment.NewLine, recent),
-                "StairGuard — последние 5 срабатываний", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            Log.Write($"Окно журнала посещений: {ex}");
+            MessageBox.Show("Не удалось открыть журнал посещений: " + SafeError(ex.Message),
+                "StairGuard", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        catch (Exception ex) { Log.Write(ex); }
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
