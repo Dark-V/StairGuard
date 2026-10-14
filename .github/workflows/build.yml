@@ -52,7 +52,7 @@ jobs:
         with:
           tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.7.0-ci.{0}', github.run_number) }}
           target_commitish: ${{ github.sha }}
-          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('StairGuard {0}', github.ref_name) || format('StairGuard v1.7 CI #{0}', github.run_number) }}
+          name: ${{ startsWith(github.ref, 'refs/tags/v') && format('StairGuard {0}', github.ref_name) || format('StairGuard v1.7 CI build {0}', github.run_number) }}
           prerelease: ${{ github.ref == 'refs/heads/main' }}
           files: |
             StairGuard-win-x64-self-contained.zip
