@@ -125,23 +125,36 @@ internal sealed class MovementTracker
     readonly List<Track> tracks = new();
     long lastAlert;
 
-    public Person? Update(IReadOnlyList<Person> detections, Settings settings, int width, int height)
+    public Person? Update(IReadOnlyList<Person> detections, Settings settings, int width, int height, Action<string>? trace = null)
     {
         long now = Environment.TickCount64;
-        tracks.RemoveAll(t => now - t.LastTick > 6500);
+        int expired = tracks.RemoveAll(t => now - t.LastTick > 6500);
+        if (expired > 0) trace?.Invoke($"expired_tracks={expired}");
         var polygon = RegionGeometry.Resolve(settings);
-        if (polygon is null || !settings.ArrowFrom.HasValue || !settings.ArrowTo.HasValue) return null;
+        if (polygon is null || !settings.ArrowFrom.HasValue || !settings.ArrowTo.HasValue)
+        {
+            trace?.Invoke("invalid_roi_or_direction");
+            return null;
+        }
         float ax = (settings.ArrowTo.Value.X - settings.ArrowFrom.Value.X) * width;
         float ay = (settings.ArrowTo.Value.Y - settings.ArrowFrom.Value.Y) * height;
         float length = MathF.Sqrt(ax * ax + ay * ay);
-        if (length < 10) return null;
+        if (length < 10)
+        {
+            trace?.Invoke($"direction_arrow_too_short={length:F1}px");
+            return null;
+        }
         ax /= length; ay /= length;
         var used = new HashSet<Track>();
         Person? alert = null;
         foreach (var person in detections)
         {
             PointF center = person.Center;
-            if (!RegionGeometry.Contains(polygon, center.X / width, center.Y / height)) continue;
+            if (!RegionGeometry.Contains(polygon, center.X / width, center.Y / height))
+            {
+                trace?.Invoke($"outside_roi center=({center.X:F0},{center.Y:F0}) conf={person.Confidence:P0}");
+                continue;
+            }
             Track? best = null;
             float maxMatch = 70f * width / 640f;
             float distance = maxMatch * maxMatch;
@@ -156,6 +169,7 @@ internal sealed class MovementTracker
             {
                 best = new Track { Origin = center, Last = center, Hits = 1, LastTick = now };
                 tracks.Add(best);
+                trace?.Invoke($"new_track center=({center.X:F0},{center.Y:F0})");
             }
             else
             {
@@ -169,18 +183,33 @@ internal sealed class MovementTracker
             float lateral = MathF.Abs(-dx0 * ay + dy0 * ax);
             if (forward < -12f * width / 640f)
             {
+                trace?.Invoke($"wrong_direction track_reset forward={forward:F1}px hits={best.Hits}");
                 best.Origin = center; best.Hits = 1; best.Triggered = false;
                 continue;
             }
-            // Person followed for 3+ samples, moved >=25 pixels in arrow direction.
-            if (!best.Triggered && best.Hits >= 3 && forward >= 25f * width / 640f && lateral < forward * 1.25f &&
-                (lastAlert == 0 || now - lastAlert >= settings.CooldownSeconds * 1000L))
+
+            float minTravel = settings.TrackerTravelPixels * width / 640f;
+            long cooldownLeft = lastAlert == 0 ? 0 :
+                Math.Max(0, settings.CooldownSeconds * 1000L - (now - lastAlert));
+            string reason = best.Triggered ? "already_triggered_for_track"
+                : best.Hits < settings.TrackerMinHits ? "waiting_for_samples"
+                : forward < minTravel ? "insufficient_forward_motion"
+                : lateral >= forward * 1.25f ? "too_much_lateral_motion"
+                : cooldownLeft > 0 ? "cooldown"
+                : "trigger";
+
+            trace?.Invoke($"center=({center.X:F0},{center.Y:F0}) hits={best.Hits}/{settings.TrackerMinHits} " +
+                $"forward={forward:F1}/{minTravel:F1}px lateral={lateral:F1}px " +
+                $"cooldown_left={cooldownLeft}ms result={reason}");
+
+            if (reason == "trigger")
             {
                 lastAlert = now;
                 best.Triggered = true;
                 alert ??= person;
             }
         }
+        if (detections.Count == 0) trace?.Invoke("no_person_detections");
         return alert;
     }
 }
