@@ -159,14 +159,13 @@ internal sealed class MovementTracker
             // Scale the association radius with frame width, as other tracker
             // distance thresholds do. The old fixed 70px radius rejected an
             // 83px change visible in real camera debug logs.
-            float maxMatch = Math.Clamp(settings.TrackerMatchPixels, 70, 250) * width / 640f;
+            float maxMatch = TrackerMatching.Radius(width, settings.TrackerMatchPixels);
             float distance = maxMatch * maxMatch;
             float nearestDistanceSquared = float.PositiveInfinity;
             foreach (Track tr in tracks)
             {
                 if (used.Contains(tr)) continue;
-                float dx = tr.Last.X - center.X, dy = tr.Last.Y - center.Y;
-                float d = dx * dx + dy * dy;
+                float d = TrackerMatching.DistanceSquared(tr.Last, center);
                 nearestDistanceSquared = Math.Min(nearestDistanceSquared, d);
                 if (d < distance) { distance = d; best = tr; }
             }
