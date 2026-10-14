@@ -49,7 +49,7 @@ internal static class Log
             lock (Gate)
             {
                 var f = Paths.Journal;
-                if (File.Exists(f) && new FileInfo(f).Length > 1_000_000) File.Move(f, f + ".old", true);
+                if (File.Exists(f) && new FileInfo(f).Length > 10_000_000) File.Move(f, f + ".old", true);
                 File.AppendAllText(f, $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {data}{Environment.NewLine}");
             }
         }
@@ -72,6 +72,10 @@ internal sealed class Settings
     public int JpegQuality { get; set; } = 60;
     public int ConfidencePercent { get; set; } = 42;
     public int CooldownSeconds { get; set; } = 30;
+    // YOLO/track sensitivity: defaults preserve earlier behavior.
+    public int TrackerMinHits { get; set; } = 3;
+    public int TrackerTravelPixels { get; set; } = 25;
+    public bool DebugYolo { get; set; } = false;
     // All values are normalized fractions of the current camera image.
     // v1.6: free-form polygon (vertices in normalized image coordinates).
     // Region remains for backward compatibility with rectangles in settings.json.
@@ -92,6 +96,9 @@ internal sealed class Settings
             // low-CPU preset while keeping credentials, camera ROI and arrow.
             VideoProfiles.Apply(config);
             config.AnalysisFps = AnalysisRates.Normalize(config.AnalysisFps);
+            config.ConfidencePercent = Math.Clamp(config.ConfidencePercent, 10, 95);
+            config.TrackerMinHits = Math.Clamp(config.TrackerMinHits, 2, 8);
+            config.TrackerTravelPixels = Math.Clamp(config.TrackerTravelPixels, 8, 100);
             return config;
         }
         catch { return new(); }
@@ -100,6 +107,9 @@ internal sealed class Settings
     {
         VideoProfiles.Apply(this);
         AnalysisFps = AnalysisRates.Normalize(AnalysisFps);
+        ConfidencePercent = Math.Clamp(ConfidencePercent, 10, 95);
+        TrackerMinHits = Math.Clamp(TrackerMinHits, 2, 8);
+        TrackerTravelPixels = Math.Clamp(TrackerTravelPixels, 8, 100);
         Directory.CreateDirectory(Paths.Home);
         File.WriteAllText(Paths.Settings, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
@@ -281,7 +291,7 @@ internal static class VideoProfiles
 
 internal static class AnalysisRates
 {
-    public static readonly double[] Values = { 0.5, 1.0, 2.0 };
+    public static readonly double[] Values = { 0.5, 1.0, 2.0, 3.0, 5.0 };
     public static double Normalize(double fps) => Values.MinBy(value => Math.Abs(value - fps));
     public static string Label(double fps) => fps.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture) + " FPS";
 }

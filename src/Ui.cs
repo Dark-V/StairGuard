@@ -115,6 +115,10 @@ internal sealed class TrayForm : Form
     async Task ReadLoop(Settings config, CancellationToken token)
     {
         var tracker = new MovementTracker();
+        if (config.DebugYolo)
+            Log.Write($"[DEBUG] analysis={config.AnalysisFps:0.#}fps confidence={config.ConfidencePercent}% " +
+                $"motion_gate={config.MotionGateEnabled} min_hits={config.TrackerMinHits} " +
+                $"min_travel={config.TrackerTravelPixels}px cooldown={config.CooldownSeconds}s");
         var queue = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1)
         {
             SingleReader = true,
@@ -127,6 +131,7 @@ internal sealed class TrayForm : Form
             {
                 using var detector = new Detector(Paths.Model);
                 var motion = new MotionGate(config);
+                if (config.DebugYolo) Log.Write("[DEBUG][YOLO] model_loaded");
                 await foreach (var jpeg in queue.Reader.ReadAllAsync(token))
                 {
                     try
@@ -134,10 +139,35 @@ internal sealed class TrayForm : Form
                         using var ms = new MemoryStream(jpeg, writable: false);
                         using var decoded = Image.FromStream(ms);
                         using var frame = new Bitmap(decoded);
-                        if (config.MotionGateEnabled && !motion.HasMovement(frame))
-                            continue;
+                        if (config.DebugYolo)
+                            Log.Write($"[DEBUG][FRAME] size={frame.Width}x{frame.Height} jpeg_bytes={jpeg.Length}");
+                        if (config.MotionGateEnabled)
+                        {
+                            bool moved = motion.HasMovement(frame);
+                            if (config.DebugYolo)
+                                Log.Write($"[DEBUG][MOTION] {(moved ? "pass" : "skip_yolo_no_motion")}");
+                            if (!moved) continue;
+                        }
+
+                        var inferenceTimer = Stopwatch.StartNew();
                         var people = detector.Find(frame, config.ConfidencePercent / 100f);
-                        var triggered = tracker.Update(people, config, frame.Width, frame.Height);
+                        inferenceTimer.Stop();
+                        if (config.DebugYolo)
+                        {
+                            Log.Write($"[DEBUG][YOLO] people={people.Count} threshold={config.ConfidencePercent}% " +
+                                $"elapsed_ms={inferenceTimer.ElapsedMilliseconds}");
+                            foreach (var person in people)
+                                Log.Write($"[DEBUG][YOLO] confidence={person.Confidence:P0} bbox=" +
+                                    $"({person.Bounds.Left:F0},{person.Bounds.Top:F0}," +
+                                    $"{person.Bounds.Width:F0},{person.Bounds.Height:F0})");
+                        }
+
+                        Action<string>? trace = config.DebugYolo
+                            ? message => Log.Write("[DEBUG][TRACKER] " + message)
+                            : null;
+                        var triggered = tracker.Update(people, config, frame.Width, frame.Height, trace);
+                        if (config.DebugYolo)
+                            Log.Write($"[DEBUG][TRIGGER] fired={(triggered != null)}");
                         if (triggered != null) Alert(frame, triggered);
                     }
                     catch (Exception e)
@@ -157,6 +187,9 @@ internal sealed class TrayForm : Form
         {
             SetStatus("StairGuard — наблюдение за лестницей");
             long lastQueuedAt = 0;
+            long lastDiagnosticsAt = Stopwatch.GetTimestamp();
+            long received = 0;
+            long submitted = 0;
             long intervalTicks = (long)(Stopwatch.Frequency / AnalysisRates.Normalize(config.AnalysisFps));
             while (!token.IsCancellationRequested)
             {
@@ -170,10 +203,17 @@ internal sealed class TrayForm : Form
                             ++latestVersion;
                         }
                         long now = Stopwatch.GetTimestamp();
+                        ++received;
                         if (lastQueuedAt == 0 || now - lastQueuedAt >= intervalTicks)
                         {
                             lastQueuedAt = now;
-                            queue.Writer.TryWrite(jpeg); // latest only; never block video
+                            if (queue.Writer.TryWrite(jpeg)) ++submitted; // bounded queue drops old frames
+                        }
+                        if (config.DebugYolo && now - lastDiagnosticsAt >= 5L * Stopwatch.Frequency)
+                        {
+                            Log.Write($"[DEBUG][STREAM] received={received} submitted={submitted} " +
+                                $"not_submitted={received - submitted} interval=5s");
+                            received = 0; submitted = 0; lastDiagnosticsAt = now;
                         }
                         return Task.CompletedTask;
                     }, token);
@@ -477,7 +517,10 @@ internal sealed class SettingsDialog : Form
     readonly Label videoDetails = new() { AutoSize = true, ForeColor = Color.DimGray };
     readonly ComboBox analysisRate = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 185 };
     readonly CheckBox motionGate = new() { Text = "Запускать YOLO только при движении на лестнице", AutoSize = true, Checked = true };
-    readonly NumericUpDown conf = new() { Minimum = 20, Maximum = 90, Width = 95 };
+    readonly CheckBox debugYolo = new() { Text = "Режим отладки YOLO — подробный технический журнал", AutoSize = true };
+    readonly NumericUpDown conf = new() { Minimum = 10, Maximum = 95, Width = 95 };
+    readonly NumericUpDown minHits = new() { Minimum = 2, Maximum = 8, Width = 95 };
+    readonly NumericUpDown travel = new() { Minimum = 8, Maximum = 100, Width = 95 };
     readonly NumericUpDown cooldown = new() { Minimum = 5, Maximum = 300, Width = 95 };
     readonly CheckBox autostart = new() { Text = "Запускать автоматически при входе в Windows", AutoSize = true };
     readonly Label zone = new() { AutoSize = true, ForeColor = Color.FromArgb(22, 101, 52) };
@@ -498,6 +541,8 @@ internal sealed class SettingsDialog : Form
             Server = old.Server, Login = old.Login, Credential = old.Credential,
             VideoPreset = old.VideoPreset, AnalysisFps = old.AnalysisFps, MotionGateEnabled = old.MotionGateEnabled,
             ConfidencePercent = old.ConfidencePercent, CooldownSeconds = old.CooldownSeconds,
+            TrackerMinHits = old.TrackerMinHits, TrackerTravelPixels = old.TrackerTravelPixels,
+            DebugYolo = old.DebugYolo,
             Region = old.Region, RegionPolygon = old.RegionPolygon is null ? null : new List<PointF>(old.RegionPolygon),
             ArrowFrom = old.ArrowFrom, ArrowTo = old.ArrowTo
         };
@@ -563,7 +608,10 @@ internal sealed class SettingsDialog : Form
         foreach (double rate in AnalysisRates.Values) analysisRate.Items.Add(AnalysisRates.Label(rate));
         analysisRate.SelectedIndex = Array.IndexOf(AnalysisRates.Values, AnalysisRates.Normalize(work.AnalysisFps));
         motionGate.Checked = work.MotionGateEnabled;
+        debugYolo.Checked = work.DebugYolo;
         conf.Value = Math.Clamp(work.ConfidencePercent, (int)conf.Minimum, (int)conf.Maximum);
+        minHits.Value = Math.Clamp(work.TrackerMinHits, (int)minHits.Minimum, (int)minHits.Maximum);
+        travel.Value = Math.Clamp(work.TrackerTravelPixels, (int)travel.Minimum, (int)travel.Maximum);
         cooldown.Value = Math.Clamp(work.CooldownSeconds, (int)cooldown.Minimum, (int)cooldown.Maximum);
         Add(server, "Сервер Macroscop");
         Add(login, "Логин");
@@ -572,8 +620,17 @@ internal sealed class SettingsDialog : Form
         Add(videoDetails, "Видео Macroscop");
         Add(analysisRate, "Частота анализа YOLO");
         Add(motionGate, null, 8);
-        Add(conf, "Уверенность, %");
+        Add(conf, "Порог YOLO, %");
+        Add(minHits, "Кадров для трека");
+        Add(travel, "Сдвиг по стрелке, px");
         Add(cooldown, "Повтор тревоги, сек.");
+        Add(debugYolo, null, 8);
+        Add(new Label
+        {
+            Text = "Отладка записывает поступление кадров, пропуски Motion Gate, обнаружения YOLO " +
+                   "и причины отказа трекера. Для диагностики отключи Motion Gate.",
+            AutoSize = true, MaximumSize = new Size(620, 0), ForeColor = Color.DimGray
+        }, null, 12);
         autostart.Checked = Settings.Autostart();
         Add(autostart, null, 16);
         var pickerRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, MaximumSize = new Size(640, 0), FlowDirection = FlowDirection.LeftToRight };
@@ -622,7 +679,10 @@ internal sealed class SettingsDialog : Form
         VideoProfiles.Apply(work);
         work.AnalysisFps = AnalysisRates.Values[Math.Max(0, analysisRate.SelectedIndex)];
         work.MotionGateEnabled = motionGate.Checked;
+        work.DebugYolo = debugYolo.Checked;
         work.ConfidencePercent = (int)conf.Value;
+        work.TrackerMinHits = (int)minHits.Value;
+        work.TrackerTravelPixels = (int)travel.Value;
         work.CooldownSeconds = (int)cooldown.Value;
         if (string.IsNullOrWhiteSpace(work.Server) || string.IsNullOrWhiteSpace(work.Login))
         { MessageBox.Show("Укажи адрес сервера и логин."); return false; }
