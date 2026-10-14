@@ -37,8 +37,10 @@ internal sealed class TrayForm : Form
         menu.Items.Add("Смотреть видео с камеры", null, (_, _) => ShowPreview());
         pauseItem = new ToolStripMenuItem("Приостановить", null, (_, _) => TogglePause());
         menu.Items.Add(pauseItem);
-        menu.Items.Add("Открыть журнал", null, (_, _) => OpenJournal());
-        menu.Items.Add("Последние 5 срабатываний", null, (_, _) => OpenTriggers());
+        menu.Items.Add("Технический журнал", null, (_, _) => OpenJournal());
+        menu.Items.Add("Журнал посещений (триггеров)", null, (_, _) => OpenTriggers());
+        menu.Items.Add("Последние 5 срабатываний", null, (_, _) => OpenRecentTriggers());
+        menu.Items.Add("Тестовый триггер", null, (_, _) => TriggerTest());
         menu.Items.Add("Выход", null, (_, _) => { shuttingDown = true; Close(); });
         tray = new NotifyIcon
         {
@@ -68,7 +70,7 @@ internal sealed class TrayForm : Form
 
     void OpenSettings()
     {
-        using var dialog = new SettingsDialog(settings);
+        using var dialog = new SettingsDialog(settings, TriggerTest);
         if (dialog.ShowDialog(this) != DialogResult.OK) return;
         settings = dialog.Result;
         settings.Save();
@@ -205,36 +207,117 @@ internal sealed class TrayForm : Form
 
     void Alert(Bitmap frame, Person person)
     {
-        if (Interlocked.CompareExchange(ref popupBusy, 1, 0) != 0) return;
         RectangleF b = person.Bounds;
         float marginX = b.Width * 0.30f, marginY = b.Height * 0.20f;
         int x = Math.Max(0, (int)(b.Left - marginX));
         int y = Math.Max(0, (int)(b.Top - marginY));
         int r = Math.Min(frame.Width, (int)(b.Right + marginX));
         int d = Math.Min(frame.Height, (int)(b.Bottom + marginY));
-        if (r - x < 5 || d - y < 5) { Volatile.Write(ref popupBusy, 0); return; }
-        using var crop = frame.Clone(new Rectangle(x, y, r - x, d - y), frame.PixelFormat);
-        var copy = new Bitmap(crop);
-        if (shuttingDown || !IsHandleCreated || IsDisposed) { copy.Dispose(); Volatile.Write(ref popupBusy, 0); return; }
+        if (r - x < 5 || d - y < 5)
+        {
+            Log.Write("Обнаружение пропущено: область человека меньше 5 пикселей.");
+            return;
+        }
+
+        RecordTrigger(frame, person.Confidence, new Rectangle(x, y, r - x, d - y), false);
+    }
+
+    // A real and a manual event use exactly the same logging, image and
+    // notification path. The history is recorded even if a popup is open.
+    void RecordTrigger(Bitmap frame, float confidence, Rectangle? crop, bool isTest)
+    {
+        DateTime time = DateTime.Now;
+        string? imagePath = TriggerHistory.Add(confidence, frame, crop, isTest);
+        if (imagePath == null)
+        {
+            Log.Write("Триггер записан без снимка: уведомление с фото пропущено.");
+            return;
+        }
+
+        ToastNotifier.ShowTrigger(imagePath, confidence, time, isTest);
+
+        if (Interlocked.CompareExchange(ref popupBusy, 1, 0) != 0) return;
+        Bitmap? copy = null;
         try
         {
+            using (var file = File.OpenRead(imagePath))
+            using (var decoded = Image.FromStream(file))
+                copy = new Bitmap(decoded);
+
+            if (shuttingDown || !IsHandleCreated || IsDisposed)
+            {
+                copy.Dispose();
+                Volatile.Write(ref popupBusy, 0);
+                return;
+            }
+
+            var owned = copy;
+            copy = null;
             BeginInvoke(new Action(() =>
             {
-                if (shuttingDown) { copy.Dispose(); Volatile.Write(ref popupBusy, 0); return; }
+                if (shuttingDown || IsDisposed)
+                {
+                    owned.Dispose();
+                    Volatile.Write(ref popupBusy, 0);
+                    return;
+                }
                 try
                 {
-                    var alert = new AlertForm(copy);
+                    var alert = new AlertForm(owned, manual: isTest, autoClose: true);
                     alert.FormClosed += (_, _) => Volatile.Write(ref popupBusy, 0);
                     alert.Show();
-                    Log.Write($"Подъём по лестнице, уверенность {person.Confidence:P0}");
-                    // frame belongs to the inference loop and may already be disposed;
-                    // copy is retained by the alert form and is valid here.
-                    TriggerHistory.Add(person.Confidence, copy, new Rectangle(0, 0, copy.Width, copy.Height));
                 }
-                catch { copy.Dispose(); Volatile.Write(ref popupBusy, 0); }
+                catch (Exception ex)
+                {
+                    Log.Write($"Окно тревоги: {ex}");
+                    owned.Dispose();
+                    Volatile.Write(ref popupBusy, 0);
+                }
             }));
         }
-        catch { copy.Dispose(); Volatile.Write(ref popupBusy, 0); }
+        catch (Exception ex)
+        {
+            copy?.Dispose();
+            Volatile.Write(ref popupBusy, 0);
+            Log.Write($"Окно тревоги: {ex}");
+        }
+    }
+
+    void TriggerTest()
+    {
+        try
+        {
+            byte[]? jpeg;
+            lock (imageGate) jpeg = latestJpeg;
+            if (jpeg != null)
+            {
+                using var stream = new MemoryStream(jpeg, writable: false);
+                using var decoded = Image.FromStream(stream);
+                using var frame = new Bitmap(decoded);
+                RecordTrigger(frame, 1f, null, true);
+            }
+            else
+            {
+                // Test remains available without camera access or saved credentials.
+                using var frame = new Bitmap(640, 360, PixelFormat.Format24bppRgb);
+                using (var graphics = Graphics.FromImage(frame))
+                {
+                    graphics.Clear(Color.FromArgb(28, 39, 57));
+                    using var white = new SolidBrush(Color.White);
+                    using var heading = new Font("Segoe UI", 29, FontStyle.Bold);
+                    using var label = new Font("Segoe UI", 17);
+                    graphics.DrawString("StairGuard", heading, white, 24, 100);
+                    graphics.DrawString("ТЕСТОВЫЙ ТРИГГЕР", label, white, 24, 176);
+                }
+                RecordTrigger(frame, 1f, null, true);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Write($"Ручной триггер: {ex}");
+            MessageBox.Show("Не удалось выполнить тест: " + SafeError(ex.Message),
+                "StairGuard", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
     }
 
     (Bitmap? image, long version) GetPreviewFrame(long seenVersion)
@@ -290,13 +373,24 @@ internal sealed class TrayForm : Form
         try
         {
             Directory.CreateDirectory(Paths.Home);
-            if (!File.Exists(Path.Combine(Paths.Home, "triggers.log")))
-                File.WriteAllText(Path.Combine(Paths.Home, "triggers.log"), "Срабатываний ещё не было.");
-            Process.Start(new ProcessStartInfo("notepad.exe")
-            {
-                Arguments = $"\"{Path.Combine(Paths.Home, "triggers.log")}\"",
-                UseShellExecute = true
-            });
+            if (!File.Exists(Paths.TriggersJournal))
+                File.WriteAllText(Paths.TriggersJournal, "");
+            var info = new ProcessStartInfo("notepad.exe") { UseShellExecute = true };
+            info.ArgumentList.Add(Paths.TriggersJournal);
+            Process.Start(info);
+        }
+        catch (Exception ex) { Log.Write(ex); }
+    }
+
+    void OpenRecentTriggers()
+    {
+        try
+        {
+            var recent = File.Exists(Paths.TriggersJournal)
+                ? File.ReadLines(Paths.TriggersJournal).Where(line => !string.IsNullOrWhiteSpace(line)).TakeLast(5).ToArray()
+                : Array.Empty<string>();
+            MessageBox.Show(recent.Length == 0 ? "Срабатываний ещё не было." : string.Join(Environment.NewLine, recent),
+                "StairGuard — последние 5 срабатываний", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         catch (Exception ex) { Log.Write(ex); }
     }
@@ -393,9 +487,9 @@ internal sealed class AlertForm : Form
 {
     readonly PictureBox picture;
     readonly System.Windows.Forms.Timer timer;
-    public AlertForm(Bitmap crop, bool manual = false)
+    public AlertForm(Bitmap crop, bool manual = false, bool autoClose = false)
     {
-        Text = manual ? "StairGuard — просмотр камеры" : "StairGuard — движение по лестнице";
+        Text = manual ? (autoClose ? "StairGuard — тестовый триггер" : "StairGuard — просмотр камеры") : "StairGuard — движение по лестнице";
         StartPosition = FormStartPosition.Manual;
         AutoScaleMode = AutoScaleMode.Dpi;
         Font = new Font("Segoe UI", 10);
@@ -410,7 +504,7 @@ internal sealed class AlertForm : Form
         Location = new Point(area.Right - Width - 16, area.Bottom - Height - 16);
         var title = new Label
         {
-            Text = manual ? "Текущий кадр" : "Человек движется вверх по лестнице",
+            Text = manual ? (autoClose ? "Тестовое срабатывание" : "Текущий кадр") : "Человек движется вверх по лестнице",
             ForeColor = Color.White,
             Dock = DockStyle.Top,
             Height = 46,
@@ -422,7 +516,7 @@ internal sealed class AlertForm : Form
         Controls.Add(title);
         timer = new System.Windows.Forms.Timer { Interval = 15_000 };
         timer.Tick += (_, _) => Close();
-        if (!manual) Shown += (_, _) => timer.Start();
+        if (!manual || autoClose) Shown += (_, _) => timer.Start();
         FormClosed += (_, _) => { timer.Stop(); timer.Dispose(); picture.Image?.Dispose(); };
     }
 }
@@ -442,13 +536,16 @@ internal sealed class SettingsDialog : Form
     readonly Label zone = new() { AutoSize = true, ForeColor = Color.FromArgb(22, 101, 52) };
     readonly Button select = new() { Text = "Настроить область и направление…", AutoSize = true, AutoSizeMode = AutoSizeMode.GrowOnly, MinimumSize = new Size(270, 40) };
     readonly Button previewButton = new() { Text = "Тестовый снимок", AutoSize = true, MinimumSize = new Size(140, 40) };
+    readonly Button manualTriggerButton = new() { Text = "Тестовый триггер", AutoSize = true, MinimumSize = new Size(165, 40) };
+    readonly Action triggerTest;
     readonly Button save = new() { Text = "Сохранить и запустить", AutoSize = true, MinimumSize = new Size(195, 42) };
     Settings work;
     public Settings Result => work;
     public bool StartWithWindows => autostart.Checked;
 
-    public SettingsDialog(Settings old)
+    public SettingsDialog(Settings old, Action triggerTest)
     {
+        this.triggerTest = triggerTest;
         work = new Settings
         {
             Server = old.Server, Login = old.Login, Credential = old.Credential,
@@ -535,6 +632,7 @@ internal sealed class SettingsDialog : Form
         var pickerRow = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, MaximumSize = new Size(640, 0), FlowDirection = FlowDirection.LeftToRight };
         pickerRow.Controls.Add(select);
         pickerRow.Controls.Add(previewButton);
+        pickerRow.Controls.Add(manualTriggerButton);
         Add(pickerRow, null, 4);
         zone.Text = RegionGeometry.Resolve(work) is not null && work.ArrowFrom.HasValue && work.ArrowTo.HasValue
             ? "Область и направление заданы" : "Область и направление ещё не выбраны";
@@ -552,6 +650,7 @@ internal sealed class SettingsDialog : Form
         Shown += (_, _) => FitToScreen();
         select.Click += async (_, _) => await SelectRegionAsync();
         previewButton.Click += async (_, _) => await ShowTestFrameAsync();
+        manualTriggerButton.Click += (_, _) => triggerTest();
         save.Click += (_, _) => SaveClicked();
     }
 

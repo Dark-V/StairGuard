@@ -16,7 +16,7 @@ internal static class ToastNotifier
         return file;
     }
 
-    public static void ShowTrigger(string imagePath, float confidence, DateTime time)
+    public static void ShowTrigger(string imagePath, float confidence, DateTime time, bool isTest = false)
     {
         try
         {
@@ -28,7 +28,7 @@ internal static class ToastNotifier
 
             var content = new ToastContentBuilder()
                 .AddText("StairGuard")
-                .AddText("Человек обнаружен на лестнице")
+                .AddText(isTest ? "Тестовое срабатывание" : "Человек обнаружен на лестнице")
                 .AddText($"Время: {time:HH:mm:ss}\nУверенность: {confidence:P0}")
                 .AddHeroImage(new Uri(imagePath))
                 .AddArgument("triggerImage", imagePath)

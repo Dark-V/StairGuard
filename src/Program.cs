@@ -35,6 +35,7 @@ internal static class Paths
     public static readonly string Settings = Path.Combine(Home, "settings.json");
     public static readonly string Model = Path.Combine(Home, "yolov8n.onnx");
     public static readonly string Journal = Path.Combine(Home, "stairguard.log");
+    public static readonly string TriggersJournal = Path.Combine(Home, "triggers.log");
 }
 
 internal static class Log
