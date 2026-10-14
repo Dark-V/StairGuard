@@ -118,7 +118,8 @@ internal sealed class TrayForm : Form
         if (config.DebugYolo)
             Log.Write($"[DEBUG] analysis={config.AnalysisFps:0.#}fps confidence={config.ConfidencePercent}% " +
                 $"motion_gate={config.MotionGateEnabled} min_hits={config.TrackerMinHits} " +
-                $"min_travel={config.TrackerTravelPixels}px cooldown={config.CooldownSeconds}s");
+                $"min_travel={config.TrackerTravelPixels}px match_radius={config.TrackerMatchPixels}px " +
+                $"cooldown={config.CooldownSeconds}s");
         var queue = Channel.CreateBounded<byte[]>(new BoundedChannelOptions(1)
         {
             SingleReader = true,
@@ -521,6 +522,7 @@ internal sealed class SettingsDialog : Form
     readonly NumericUpDown conf = new() { Minimum = 10, Maximum = 95, Width = 95 };
     readonly NumericUpDown minHits = new() { Minimum = 2, Maximum = 8, Width = 95 };
     readonly NumericUpDown travel = new() { Minimum = 8, Maximum = 100, Width = 95 };
+    readonly NumericUpDown matchRadius = new() { Minimum = 70, Maximum = 250, Width = 95 };
     readonly NumericUpDown cooldown = new() { Minimum = 5, Maximum = 300, Width = 95 };
     readonly CheckBox autostart = new() { Text = "Запускать автоматически при входе в Windows", AutoSize = true };
     readonly Label zone = new() { AutoSize = true, ForeColor = Color.FromArgb(22, 101, 52) };
@@ -542,6 +544,7 @@ internal sealed class SettingsDialog : Form
             VideoPreset = old.VideoPreset, AnalysisFps = old.AnalysisFps, MotionGateEnabled = old.MotionGateEnabled,
             ConfidencePercent = old.ConfidencePercent, CooldownSeconds = old.CooldownSeconds,
             TrackerMinHits = old.TrackerMinHits, TrackerTravelPixels = old.TrackerTravelPixels,
+            TrackerMatchPixels = old.TrackerMatchPixels,
             DebugYolo = old.DebugYolo,
             Region = old.Region, RegionPolygon = old.RegionPolygon is null ? null : new List<PointF>(old.RegionPolygon),
             ArrowFrom = old.ArrowFrom, ArrowTo = old.ArrowTo
@@ -612,6 +615,7 @@ internal sealed class SettingsDialog : Form
         conf.Value = Math.Clamp(work.ConfidencePercent, (int)conf.Minimum, (int)conf.Maximum);
         minHits.Value = Math.Clamp(work.TrackerMinHits, (int)minHits.Minimum, (int)minHits.Maximum);
         travel.Value = Math.Clamp(work.TrackerTravelPixels, (int)travel.Minimum, (int)travel.Maximum);
+        matchRadius.Value = Math.Clamp(work.TrackerMatchPixels, (int)matchRadius.Minimum, (int)matchRadius.Maximum);
         cooldown.Value = Math.Clamp(work.CooldownSeconds, (int)cooldown.Minimum, (int)cooldown.Maximum);
         Add(server, "Сервер Macroscop");
         Add(login, "Логин");
@@ -623,6 +627,7 @@ internal sealed class SettingsDialog : Form
         Add(conf, "Порог YOLO, %");
         Add(minHits, "Кадров для трека");
         Add(travel, "Сдвиг по стрелке, px");
+        Add(matchRadius, "Радиус трека, px");
         Add(cooldown, "Повтор тревоги, сек.");
         Add(debugYolo, null, 8);
         Add(new Label
@@ -683,6 +688,7 @@ internal sealed class SettingsDialog : Form
         work.ConfidencePercent = (int)conf.Value;
         work.TrackerMinHits = (int)minHits.Value;
         work.TrackerTravelPixels = (int)travel.Value;
+        work.TrackerMatchPixels = (int)matchRadius.Value;
         work.CooldownSeconds = (int)cooldown.Value;
         if (string.IsNullOrWhiteSpace(work.Server) || string.IsNullOrWhiteSpace(work.Login))
         { MessageBox.Show("Укажи адрес сервера и логин."); return false; }

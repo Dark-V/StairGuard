@@ -8,5 +8,6 @@
   <ItemGroup>
     <Compile Remove="TriggerHistoryTests.cs" />
     <Compile Include="../src/RegionGeometry.cs" Link="RegionGeometry.cs" />
+    <Compile Include="../src/TrackerMatching.cs" Link="TrackerMatching.cs" />
   </ItemGroup>
 </Project>
