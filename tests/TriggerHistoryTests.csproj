@@ -7,6 +7,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="GeometryTests.cs" />
     <Compile Include="../src/TriggerHistory.cs" Link="TriggerHistory.cs" />
   </ItemGroup>
 </Project>
