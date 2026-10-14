@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="StairGuard: surveillance camera above ascending staircase">
+  <rect x="3" y="3" width="122" height="122" rx="25" fill="#1c7bf9"/>
+  <rect x="8" y="8" width="112" height="112" rx="21" fill="#091222"/>
+  <path d="M21 109 H40 V96 H61 V83 H82 V70 H105" fill="none" stroke="#1c7bf9" stroke-width="7.4" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M30 63 H39 L41 81 L32 85 L28 79 Z" fill="#a6c2d7"/>
+  <path d="M34 76 L54 68 L60 73 L36 86 L32 82Z" fill="#eff6fc"/>
+  <path d="M22 32 L30 25 L77 24 L88 31 L82 46 L31 55 L22 47Z" fill="#eff6fc"/>
+  <path d="M31 48 L80 36 L82 44 L32 53Z" fill="#a6c2d7"/>
+  <path d="M80 35 L90 32 L96 38 L89 50 L80 44Z" fill="#a6c2d7"/>
+  <circle cx="89" cy="40" r="5" fill="#091222"/>
+  <circle cx="89" cy="40" r="3.2" fill="#1c7bf9"/>
+  <circle cx="89" cy="40" r="1.2" fill="#5bd1fc"/>
+</svg>

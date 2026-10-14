@@ -7,11 +7,16 @@
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
     <AssemblyName>StairGuard</AssemblyName>
+    <ApplicationIcon>Assets\StairGuard.ico</ApplicationIcon>
     <RootNamespace>StairGuard</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
     <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
     <PackageReference Include="NAudio" Version="2.2.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets/StairGuard.ico" LogicalName="StairGuard.Assets.StairGuard.ico" />
+    <EmbeddedResource Include="Assets/StairGuard.png" LogicalName="StairGuard.Assets.StairGuard.png" />
   </ItemGroup>
 </Project>

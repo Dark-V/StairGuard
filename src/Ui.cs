@@ -10,6 +10,7 @@ namespace StairGuard;
 internal sealed class TrayForm : Form
 {
     readonly NotifyIcon tray;
+    readonly Icon appIcon;
     readonly ToolStripMenuItem pauseItem;
     Settings settings = Settings.Load();
     CancellationTokenSource? feedToken;
@@ -40,9 +41,12 @@ internal sealed class TrayForm : Form
         menu.Items.Add("Технический журнал", null, (_, _) => OpenJournal());
         menu.Items.Add("Тестовый триггер Windows", null, (_, _) => TriggerTest());
         menu.Items.Add("Выход", null, (_, _) => { shuttingDown = true; Close(); });
+        appIcon = AppBranding.LoadIcon();
+        Icon = appIcon;
+        ToastNotifier.StartCleanup();
         tray = new NotifyIcon
         {
-            Icon = SystemIcons.Information,
+            Icon = appIcon,
             Text = "StairGuard — запуск",
             Visible = true,
             ContextMenuStrip = menu
@@ -390,6 +394,8 @@ internal sealed class TrayForm : Form
         preview?.Close();
         tray.Visible = false;
         tray.Dispose();
+        ToastNotifier.StopCleanup();
+        appIcon.Dispose();
         lock (imageGate) { latestJpeg = null; }
         base.OnFormClosed(e);
     }
