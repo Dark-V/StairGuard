@@ -75,6 +75,7 @@ internal sealed class Settings
     // YOLO/track sensitivity: defaults preserve earlier behavior.
     public int TrackerMinHits { get; set; } = 3;
     public int TrackerTravelPixels { get; set; } = 25;
+    public int TrackerMatchPixels { get; set; } = 140;
     public bool DebugYolo { get; set; } = false;
     // All values are normalized fractions of the current camera image.
     // v1.6: free-form polygon (vertices in normalized image coordinates).
@@ -99,6 +100,7 @@ internal sealed class Settings
             config.ConfidencePercent = Math.Clamp(config.ConfidencePercent, 10, 95);
             config.TrackerMinHits = Math.Clamp(config.TrackerMinHits, 2, 8);
             config.TrackerTravelPixels = Math.Clamp(config.TrackerTravelPixels, 8, 100);
+            config.TrackerMatchPixels = Math.Clamp(config.TrackerMatchPixels, 70, 250);
             return config;
         }
         catch { return new(); }
@@ -110,6 +112,7 @@ internal sealed class Settings
         ConfidencePercent = Math.Clamp(ConfidencePercent, 10, 95);
         TrackerMinHits = Math.Clamp(TrackerMinHits, 2, 8);
         TrackerTravelPixels = Math.Clamp(TrackerTravelPixels, 8, 100);
+        TrackerMatchPixels = Math.Clamp(TrackerMatchPixels, 70, 250);
         Directory.CreateDirectory(Paths.Home);
         File.WriteAllText(Paths.Settings, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }
