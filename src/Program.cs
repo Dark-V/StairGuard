@@ -77,6 +77,8 @@ internal sealed class Settings
     public int TrackerTravelPixels { get; set; } = 25;
     public int TrackerMatchPixels { get; set; } = 140;
     public bool DebugYolo { get; set; } = false;
+    public string NotificationSound { get; set; } = NotificationAudio.Default;
+    public string CustomSoundPath { get; set; } = "";
     // All values are normalized fractions of the current camera image.
     // v1.6: free-form polygon (vertices in normalized image coordinates).
     // Region remains for backward compatibility with rectangles in settings.json.
@@ -101,6 +103,7 @@ internal sealed class Settings
             config.TrackerMinHits = Math.Clamp(config.TrackerMinHits, 2, 8);
             config.TrackerTravelPixels = Math.Clamp(config.TrackerTravelPixels, 8, 100);
             config.TrackerMatchPixels = Math.Clamp(config.TrackerMatchPixels, 70, 250);
+            config.NotificationSound = NotificationAudio.Normalize(config.NotificationSound);
             return config;
         }
         catch { return new(); }
@@ -113,6 +116,7 @@ internal sealed class Settings
         TrackerMinHits = Math.Clamp(TrackerMinHits, 2, 8);
         TrackerTravelPixels = Math.Clamp(TrackerTravelPixels, 8, 100);
         TrackerMatchPixels = Math.Clamp(TrackerMatchPixels, 70, 250);
+        NotificationSound = NotificationAudio.Normalize(NotificationSound);
         Directory.CreateDirectory(Paths.Home);
         File.WriteAllText(Paths.Settings, JsonSerializer.Serialize(this, new JsonSerializerOptions { WriteIndented = true }));
     }

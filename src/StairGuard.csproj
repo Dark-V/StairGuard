@@ -12,5 +12,6 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.22.1" />
     <PackageReference Include="CommunityToolkit.WinUI.Notifications" Version="7.1.2" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
   </ItemGroup>
 </Project>
